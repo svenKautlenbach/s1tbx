@@ -55,6 +55,7 @@ import java.awt.*;
 import java.io.File;
 import java.util.*;
 import java.util.List;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Logger;
 
 /**
@@ -238,6 +239,8 @@ public class RangeDopplerGeocodingOp extends Operator {
     private double delLat = 0.0;
     private double delLon = 0.0;
     private OrbitStateVectors orbit = null;
+
+    ReentrantLock printLock = new ReentrantLock();
 
     private AbstractMetadata.SRGRCoefficientList[] srgrConvParams = null;
     private OrbitStateVector[] orbitStateVectors = null;
@@ -478,23 +481,23 @@ public class RangeDopplerGeocodingOp extends Operator {
     private synchronized void getElevationModel() throws Exception {
 
         if (isElevationModelAvailable) return;
-        if (demName.contains(externalDEMStr) && externalDEMFile != null) { // if external DEM file is specified by user
-
-            dem = new FileElevationModel(externalDEMFile, demResamplingMethod, externalDEMNoDataValue);
-            ((FileElevationModel) dem).applyEarthGravitionalModel(externalDEMApplyEGM);
-            demNoDataValue = externalDEMNoDataValue;
-            demName = externalDEMFile.getName();
-
-        } else {
-
+//        if (demName.contains(externalDEMStr) && externalDEMFile != null) { // if external DEM file is specified by user
+//
+//            dem = new FileElevationModel(externalDEMFile, demResamplingMethod, externalDEMNoDataValue);
+//            ((FileElevationModel) dem).applyEarthGravitionalModel(externalDEMApplyEGM);
+//            demNoDataValue = externalDEMNoDataValue;
+//            demName = externalDEMFile.getName();
+//        } else {
+            // Siin tehakse DEM.
             dem = DEMFactory.createElevationModel(demName, demResamplingMethod);
             demNoDataValue = dem.getDescriptor().getNoDataValue();
-        }
+            System.out.println("##############!!! DEM dir 2 " + dem.getDescriptor().getName());
+//        }
 
-        if (elevationBand != null) {
-            elevationBand.setNoDataValue(demNoDataValue);
-            elevationBand.setNoDataValueUsed(true);
-        }
+//        if (elevationBand != null) { // See on null.
+//            elevationBand.setNoDataValue(demNoDataValue);
+//            elevationBand.setNoDataValueUsed(true);
+//        }
 
         isElevationModelAvailable = true;
     }
@@ -836,8 +839,29 @@ public class RangeDopplerGeocodingOp extends Operator {
     @Override
     public void computeTileStack(Map<Band, Tile> targetTiles, Rectangle targetRectangle, ProgressMonitor pm) throws OperatorException {
 
+        int dp = 0;
+        int dnp = 0;
+
+        while (!printLock.tryLock());
         try {
+
+            final int x0 = targetRectangle.x;
+            final int y0 = targetRectangle.y;
+            final int w = targetRectangle.width;
+            final int h = targetRectangle.height;
+            System.out.print("x0 = " + x0 + ", y0 = " + y0 + ", w = " + w + ", h = " + h + " ");
+
+            if (processingStarted == false)
+            {
+                //System.out.println("Lessgooooo");
+            }
             processingStarted = true;
+
+            if (x0 != 2520 || y0 != 0)
+            {
+                //return;
+            }
+
             try {
                 if (!isElevationModelAvailable) {
                     getElevationModel();
@@ -846,33 +870,28 @@ public class RangeDopplerGeocodingOp extends Operator {
                 throw new OperatorException(e);
             }
 
-            final int x0 = targetRectangle.x;
-            final int y0 = targetRectangle.y;
-            final int w = targetRectangle.width;
-            final int h = targetRectangle.height;
-            //System.out.println("x0 = " + x0 + ", y0 = " + y0 + ", w = " + w + ", h = " + h);
 
             final TileGeoreferencing tileGeoRef = new TileGeoreferencing(targetProduct, x0 - 1, y0 - 1, w + 2, h + 2);
 
-            double[][] localDEM = new double[h + 2][w + 2];
-            if (useAvgSceneHeight) {
-                DEMFactory.fillDEM(localDEM, avgSceneHeight);
-            } else {
+            double[][] localDEM = new double[h + 2][w + 2]; // ei saa aru, miks lisa kaks elementi - iteratsioonide kaigus nagu getSourceRectangle() tehakse indexitega lollusi.
+//            if (useAvgSceneHeight) { // See jaab valja
+//                DEMFactory.fillDEM(localDEM, avgSceneHeight);
+//            } else {
                 final boolean valid = DEMFactory.getLocalDEM(
                         dem, demNoDataValue, demResamplingMethod, tileGeoRef, x0, y0, w, h, sourceProduct,
-                        nodataValueAtSea, localDEM);
-                if (!valid && nodataValueAtSea) {
-                    for (Band targetBand : targetTiles.keySet()) {
-                        ProductData data = targetTiles.get(targetBand).getRawSamples();
-                        double nodatavalue = targetBand.getNoDataValue();
-                        final int length = data.getNumElems();
-                        for (int i = 0; i < length; ++i) {
-                            data.setElemDoubleAt(i, nodatavalue);
-                        }
-                    }
-                    return;
-                }
-            }
+                        nodataValueAtSea, localDEM); // localDem has array inserted with altitude values, which are 1 to 1 pixel location respective to input rect.
+//                if (!valid && nodataValueAtSea) { // Jata see valja.
+//                    for (Band targetBand : targetTiles.keySet()) {
+//                        ProductData data = targetTiles.get(targetBand).getRawSamples();
+//                        double nodatavalue = targetBand.getNoDataValue();
+//                        final int length = data.getNumElems();
+//                        for (int i = 0; i < length; ++i) {
+//                            data.setElemDoubleAt(i, nodatavalue);
+//                        }
+//                    }
+//                    return;
+//                }
+//            }
 
             final Rectangle sourceRectangle = getSourceRectangle(x0, y0, w, h, tileGeoRef, localDEM);
 
@@ -883,53 +902,53 @@ public class RangeDopplerGeocodingOp extends Operator {
             ProductData demBuffer = null, latBuffer = null, lonBuffer = null, localIncidenceAngleBuffer = null,
                     projectedLocalIncidenceAngleBuffer = null, incidenceAngleFromEllipsoidBuffer = null;
 
-            final List<TileData> tgtTileList = new ArrayList<>();
-            final Set<Band> keySet = targetTiles.keySet();
+            final List<TileData> tgtTileList = new ArrayList<>(); // Suurus 1 kuna meil 1 band ainult.
+            final Set<Band> keySet = targetTiles.keySet(); // Meil on 1 band.
             for (Band targetBand : keySet) {
 
-                if (targetBand.getName().equals("elevation")) {
-                    demBuffer = targetTiles.get(targetBand).getDataBuffer();
-                    continue;
-                }
-
-                if (targetBand.getName().equals("latitude")) {
-                    latBuffer = targetTiles.get(targetBand).getDataBuffer();
-                    continue;
-                }
-
-                if (targetBand.getName().equals("longitude")) {
-                    lonBuffer = targetTiles.get(targetBand).getDataBuffer();
-                    continue;
-                }
-
-                if (targetBand.getName().equals("localIncidenceAngle")) {
-                    localIncidenceAngleBuffer = targetTiles.get(targetBand).getDataBuffer();
-                    continue;
-                }
-
-                if (targetBand.getName().equals("projectedLocalIncidenceAngle")) {
-                    projectedLocalIncidenceAngleBuffer = targetTiles.get(targetBand).getDataBuffer();
-                    continue;
-                }
-
-                if (targetBand.getName().equals("incidenceAngleFromEllipsoid")) {
-                    incidenceAngleFromEllipsoidBuffer = targetTiles.get(targetBand).getDataBuffer();
-                    continue;
-                }
+//                if (targetBand.getName().equals("elevation")) { // Pole
+//                    demBuffer = targetTiles.get(targetBand).getDataBuffer();
+//                    continue;
+//                }
+//
+//                if (targetBand.getName().equals("latitude")) { // Pole
+//                    latBuffer = targetTiles.get(targetBand).getDataBuffer();
+//                    continue;
+//                }
+//
+//                if (targetBand.getName().equals("longitude")) { // Pole
+//                    lonBuffer = targetTiles.get(targetBand).getDataBuffer();
+//                    continue;
+//                }
+//
+//                if (targetBand.getName().equals("localIncidenceAngle")) { // Pole
+//                    localIncidenceAngleBuffer = targetTiles.get(targetBand).getDataBuffer();
+//                    continue;
+//                }
+//
+//                if (targetBand.getName().equals("projectedLocalIncidenceAngle")) { // Pole
+//                    projectedLocalIncidenceAngleBuffer = targetTiles.get(targetBand).getDataBuffer();
+//                    continue;
+//                }
+//
+//                if (targetBand.getName().equals("incidenceAngleFromEllipsoid")) { // Pole
+//                    incidenceAngleFromEllipsoidBuffer = targetTiles.get(targetBand).getDataBuffer();
+//                    continue;
+//                }
 
                 final Band[] srcBands = targetBandNameToSourceBand.get(targetBand.getName());
                 Tile sourceTileI = null, sourceTileQ = null;
-                if (sourceRectangle != null) {
-                    sourceTileI = getSourceTile(srcBands[0], sourceRectangle);
-                    sourceTileQ = srcBands.length > 1 ? getSourceTile(srcBands[1], sourceRectangle) : null;
-                }
+//                if (sourceRectangle != null) { // Siia ei lahe.
+//                    sourceTileI = getSourceTile(srcBands[0], sourceRectangle);
+//                    sourceTileQ = srcBands.length > 1 ? getSourceTile(srcBands[1], sourceRectangle) : null;
+//                }
 
                 final TileData td = new TileData(targetTiles.get(targetBand), srcBands, isPolsar, outputComplex,
                         targetBand.getName(), getBandUnit(targetBand.getName()), absRoot, calibrator, imgResampling,
-                        sourceTileI, sourceTileQ);
+                        sourceTileI, sourceTileQ); // isPolsar = false, outputComplex = false, imgResampling = bilinear interp resampling, TilI = null, TileQ = null
 
-                td.applyRadiometricNormalization = targetBandApplyRadiometricNormalizationFlag.get(targetBand.getName());
-                td.applyRetroCalibration = targetBandApplyRetroCalibrationFlag.get(targetBand.getName());
+                td.applyRadiometricNormalization = targetBandApplyRadiometricNormalizationFlag.get(targetBand.getName()); // See on false
+                td.applyRetroCalibration = targetBandApplyRetroCalibrationFlag.get(targetBand.getName()); // See on false
                 tgtTileList.add(td);
             }
 
@@ -937,14 +956,19 @@ public class RangeDopplerGeocodingOp extends Operator {
             for (TileData tileData : tgtTiles) {
                 if (sourceRectangle != null) {
                     try {
+                        // Some tiles do have src rect data (for our case only I component).
                         final Band[] srcBands = targetBandNameToSourceBand.get(tileData.bandName);
+                        System.out.print("rect data ");
                         tileData.imgResamplingRaster.setSourceTiles(getSourceTile(srcBands[0], sourceRectangle),
                                 srcBands.length > 1 ? getSourceTile(srcBands[1], sourceRectangle) : null);
                     } catch (Exception e) {
                         tileData.imgResamplingRaster.setSourceTiles(null, null);
                     }
                 } else {
-                    tileData.imgResamplingRaster.setSourceTiles(null, null);
+                    // Some input tiles are just empty. Probably SNAP does it so that it can cover full rectangle
+                    // that can be seen in a view window afterwards. But these empty rects should stay empty.
+                    System.out.print("rect null ");
+                    tileData.imgResamplingRaster.setSourceTiles(null, null); // Laheb siia aga arvan et see ineffective - loika valja
                 }
             }
 
@@ -955,14 +979,15 @@ public class RangeDopplerGeocodingOp extends Operator {
 
             final GeoPos posFirst = targetProduct.getSceneGeoCoding().getGeoPos(new PixelPos(0,0), null);
             final GeoPos posLast = targetProduct.getSceneGeoCoding().getGeoPos(new PixelPos(0,targetImageHeight), null);
-            int diffLat = (int)Math.abs(posFirst.lat - posLast.lat);
+            int diffLat = (int)Math.abs(posFirst.lat - posLast.lat); // diffLat on 0 kuna burst on vaike.
 
             for (int y = y0; y < maxY; y++) {
                 final int yy = y - y0 + 1;
                 for (int x = x0; x < maxX; x++) {
                     final int index = tgtTiles[0].targetTile.getDataBufferIndex(x, y);
-
+                    dnp++;
                     Double alt = localDEM[yy][x - x0 + 1];
+                    // !!!!!!!!!!!!!!!!!!!!!!!!!!! From here
                     if (alt.equals(demNoDataValue) && !useAvgSceneHeight) {
                         if (nodataValueAtSea) {
                             saveNoDataValueToTarget(index, tgtTiles, demBuffer);
@@ -985,12 +1010,14 @@ public class RangeDopplerGeocodingOp extends Operator {
                         saveNoDataValueToTarget(index, tgtTiles, demBuffer);
                         continue;
                     }
+                    // To here no data is being saved (probably the area which is out of the input)
 
                     if (!SARGeocoding.isValidCell(posData.rangeIndex, posData.azimuthIndex, lat, lon, diffLat,
                             sourceProduct.getSceneGeoCoding(), srcMaxRange, srcMaxAzimuth, posData.sensorPos)) {
                         saveNoDataValueToTarget(index, tgtTiles, demBuffer);
                     } else {
-
+                        dnp--;
+                        dp++;
                         final double[] localIncidenceAngles = {SARGeocoding.NonValidIncidenceAngle,
                                 SARGeocoding.NonValidIncidenceAngle};
 
@@ -1065,7 +1092,10 @@ public class RangeDopplerGeocodingOp extends Operator {
         } catch (Throwable e) {
             orthoDataProduced = true; //to prevent multiple error messages
             OperatorUtils.catchOperatorException(getId(), e);
+            System.out.println("##########PUPU");
         }
+        System.out.println(" dp " + dp + " dnp " + dnp);
+        printLock.unlock();
     }
 
     private void saveNoDataValueToTarget(final int index, final TileData[] tgtTiles, final ProductData demBuffer) {

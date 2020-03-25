@@ -33,7 +33,7 @@ public class TestDEM {
      *
      * @throws Exception general exception
      */
-    @Test
+   // @Test
     public void testProcessing() throws Exception {
         final Product sourceProduct = TestUtils.createProduct("GRD", 10,10);
 
